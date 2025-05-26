@@ -1,0 +1,16 @@
+# render.yaml
+services:
+  - type: web # Indicates this is a web service
+    name: my-quiz-api # Choose a name for your service
+    runtime: python # CORRECTED: Specifies the runtime environment
+    buildCommand: "pip install -r requirements.txt" # Command to install dependencies
+    startCommand: "gunicorn app:app" # Command to start your application
+    plan: free # Or your desired plan (e.g., starter)
+    # Optional: If your Python version is critical, uncomment and set:
+    # envVars:
+    #   - key: PYTHON_VERSION
+    #     value: "3.11" # Or "3.9", "3.10", etc.
+    # Optional: Region
+    # region: oregon # e.g., oregon, frankfurt
+    # Optional: Health Check Path
+    # healthCheckPath: /
