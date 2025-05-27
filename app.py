@@ -12,7 +12,7 @@ CSV_LOADED_SUCCESSFULLY = False # Global flag to indicate CSV status
 all_questions_data = []
 try:
     encodings_to_try = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
-    file_opened_successfully_locally = False # Use a local var for the loop
+    file_opened_successfully_locally = False
     for enc in encodings_to_try:
         try:
             with open(CSV_FILE_PATH, mode='r', encoding=enc) as infile:
@@ -26,61 +26,51 @@ try:
 
                 if not all_questions_data:
                     print(f"Warning: CSV file '{CSV_FILE_PATH}' with encoding '{enc}' is empty or contains only headers.")
-                elif 'Unit No' not in all_questions_data[0]: # Check if first data row has 'Unit No'
+                elif 'Unit No' not in all_questions_data[0]:
                     print(f"Warning: 'Unit No' column not found in the first data row of '{CSV_FILE_PATH}' with encoding '{enc}'. Data might be malformed.")
-                    all_questions_data = [] # Invalidate data if essential column missing in content
+                    all_questions_data = []
                     continue
 
                 print(f"Successfully loaded CSV '{CSV_FILE_PATH}' with encoding: {enc}")
                 file_opened_successfully_locally = True
-                CSV_LOADED_SUCCESSFULLY = True # Set global flag on success
+                CSV_LOADED_SUCCESSFULLY = True
                 break
         except UnicodeDecodeError:
             print(f"Failed to decode CSV '{CSV_FILE_PATH}' with encoding: {enc}")
             continue
         except FileNotFoundError:
             print(f"ERROR: The CSV file '{CSV_FILE_PATH}' was not found.")
-            # Don't exit immediately, let health check report issue
-            break # Break from encoding loop, CSV_LOADED_SUCCESSFULLY will be False
+            break
         except Exception as e:
             print(f"An unexpected error occurred while processing CSV '{CSV_FILE_PATH}' with encoding {enc}: {e}")
             continue
 
-    if not file_opened_successfully_locally and not CSV_LOADED_SUCCESSFULLY: # Check if we never managed to open/parse
+    if not file_opened_successfully_locally and not CSV_LOADED_SUCCESSFULLY:
         print(f"CRITICAL ERROR during startup: Could not read or parse the CSV file '{CSV_FILE_PATH}' with any attempted encodings.")
-        # CSV_LOADED_SUCCESSFULLY remains False
     elif not all_questions_data and file_opened_successfully_locally:
-        print(f"INFO during startup: CSV file '{CSV_FILE_PATH}' was loaded but found to be empty or malformed after header checks. API will return 404 for all unit requests if data is truly empty.")
-        # CSV_LOADED_SUCCESSFULLY is True (file opened), but data is empty
+        print(f"INFO during startup: CSV file '{CSV_FILE_PATH}' was loaded but found to be empty or malformed. API will return 404/503 for question requests.")
 
 except Exception as e:
     print(f"A critical error occurred during application startup logic: {e}")
-    # CSV_LOADED_SUCCESSFULLY remains False
 
 
 # +++ HEALTH CHECK ENDPOINT +++
 @app.route('/health', methods=['GET'])
 def health_check():
-    """
-    Health check endpoint.
-    Returns 200 if the app is running and the CSV was loaded and contains data.
-    Returns 200 with a specific message if CSV was loaded but is empty.
-    Returns 503 if the CSV failed to load, as the app is not fully functional.
-    """
-    if CSV_LOADED_SUCCESSFULLY and all_questions_data: # Check if CSV loaded AND has data
+    if CSV_LOADED_SUCCESSFULLY and all_questions_data:
         return jsonify(status="ok", message="Application is healthy and data is loaded."), 200
     elif CSV_LOADED_SUCCESSFULLY and not all_questions_data:
-        return jsonify(status="ok_empty_data", message="Application is running, but question data is empty (CSV might be empty or malformed after headers)."), 200 # Still OK for app running
+        return jsonify(status="ok_empty_data", message="Application is running, but question data is empty."), 200
     else:
-        return jsonify(status="error", message="Application is running, but failed to load question data correctly."), 503 # Service Unavailable
+        return jsonify(status="error", message="Application is running, but failed to load question data correctly."), 503
 
 
 @app.route('/questions/unit/<int:unit_id>', methods=['GET'])
 def get_single_question_for_unit(unit_id):
-    if not CSV_LOADED_SUCCESSFULLY: # Primary check for CSV load status
-        abort(503, description="Service is unavailable due to data loading issues. Please check logs.")
-    if not all_questions_data: # Check if data is empty even if CSV was "loaded"
-         abort(404, description="No question data available. The source CSV might be empty or improperly formatted.")
+    if not CSV_LOADED_SUCCESSFULLY:
+        abort(503, description="Service is unavailable due to data loading issues (CSV not loaded).")
+    if not all_questions_data:
+         abort(503, description="Service is unavailable as question data is empty (CSV loaded but no data).")
 
     unit_specific_questions_raw = [
         q for q in all_questions_data if q.get('Unit No') == str(unit_id)
@@ -93,29 +83,29 @@ def get_single_question_for_unit(unit_id):
     question_text = selected_question_data.get('Question', 'Unknown Question')
     correct_answer = selected_question_data.get('Correct Answer', 'Unknown Correct Answer')
     
-    # Get all four wrong answers directly from the CSV columns
-    # Use .get(key, '') to default to an empty string if a column is missing for a row or is empty
-    wrong_answer_1 = selected_question_data.get('Wrong Answer 1', '')
-    wrong_answer_2 = selected_question_data.get('Wrong Answer 2', '')
-    wrong_answer_3 = selected_question_data.get('Wrong Answer 3', '')
-    wrong_answer_4 = selected_question_data.get('Wrong Answer 4', '')
-
-    # Combine correct answer and all four wrong answers
-    all_options = [
-        correct_answer,
-        wrong_answer_1,
-        wrong_answer_2,
-        wrong_answer_3,
-        wrong_answer_4
+    wrong_answers = [
+        selected_question_data.get('Wrong Answer 1', 'Fallback Option W1'), # Added fallbacks if CSV cells are empty
+        selected_question_data.get('Wrong Answer 2', 'Fallback Option W2'),
+        selected_question_data.get('Wrong Answer 3', 'Fallback Option W3'),
+        selected_question_data.get('Wrong Answer 4', 'Fallback Option W4')
     ]
-    
-    # Shuffle the combined list of 5 options
+    # Ensure all options are strings and not empty, otherwise provide a fallback to avoid UI issues.
+    # This is especially important if a CSV cell for a wrong answer is truly blank.
+    wrong_answers_filtered = [wa if wa and wa.strip() else f"Option {i+1}" for i, wa in enumerate(wrong_answers)]
+
+
+    all_options = [correct_answer] + wrong_answers_filtered
     random.shuffle(all_options)
+
+    # Ensure we still have 5 options even if some were identical after filtering or fallbacks
+    # This scenario is less likely with distinct fallbacks, but good for robustness.
+    # For simplicity, the current approach relies on CSV having 1 correct + 4 distinct wrong answers.
+    # If CSV has empty cells for wrong answers, the fallbacks will be used.
 
     formatted_question = {
         "question": question_text,
-        "options": all_options, # This will now be a list of 5 options
-        "correct_answer_debug": correct_answer
+        "options": all_options, # Should be a list of 5 options
+        "correct_answer_debug": correct_answer # For client-side checking
     }
     
     return jsonify(formatted_question)
@@ -124,6 +114,6 @@ if __name__ == '__main__':
     if not CSV_LOADED_SUCCESSFULLY:
         print("WARNING: Application starting with CSV data load issues. Health check will likely fail or indicate problems.")
     elif not all_questions_data:
-        print("WARNING: Application starting, CSV loaded but no data found. Endpoints for questions will return 404 or 503.")
-
-    app.run(debug=True, port=5001)
+        print("WARNING: Application starting, CSV loaded but no data found. Endpoints for questions will return issues.")
+    # Run on 0.0.0.0 to make it accessible from other devices on your network (like Unity running on the same machine)
+    app.run(host='0.0.0.0', debug=True, port=5001)
