@@ -5,7 +5,7 @@ import random
 app = Flask(__name__)
 
 # --- Configuration ---
-CSV_FILE_PATH = 'questions.csv'
+CSV_FILE_PATH = 'questions.csv' # Make sure this file exists in the same directory or provide the correct path
 CSV_LOADED_SUCCESSFULLY = False # Global flag to indicate CSV status
 
 # --- Load and prepare data at startup ---
@@ -22,14 +22,19 @@ try:
                     print(f"Warning: CSV file '{CSV_FILE_PATH}' with encoding '{enc}' is missing required headers or has incorrect format. Headers found: {reader.fieldnames}")
                     continue
 
-                all_questions_data = list(reader)
+                all_questions_data_temp = []
+                for i, row in enumerate(reader):
+                    # Basic validation for 'Unit No' - ensure it can be interpreted as a string/number later
+                    if not row.get('Unit No') or not row.get('Unit No').strip():
+                        print(f"Warning: Row {i+2} in CSV (encoding {enc}) has missing or empty 'Unit No'. Skipping row: {row}")
+                        continue
+                    all_questions_data_temp.append(row)
+                
+                all_questions_data = all_questions_data_temp
 
                 if not all_questions_data:
-                    print(f"Warning: CSV file '{CSV_FILE_PATH}' with encoding '{enc}' is empty or contains only headers.")
-                elif 'Unit No' not in all_questions_data[0]:
-                    print(f"Warning: 'Unit No' column not found in the first data row of '{CSV_FILE_PATH}' with encoding '{enc}'. Data might be malformed.")
-                    all_questions_data = []
-                    continue
+                    print(f"Warning: CSV file '{CSV_FILE_PATH}' with encoding '{enc}' is empty or contains only headers after validation.")
+                # No need for 'Unit No' in all_questions_data[0] check here if row-level check is done
 
                 print(f"Successfully loaded CSV '{CSV_FILE_PATH}' with encoding: {enc}")
                 file_opened_successfully_locally = True
@@ -40,15 +45,16 @@ try:
             continue
         except FileNotFoundError:
             print(f"ERROR: The CSV file '{CSV_FILE_PATH}' was not found.")
-            break
+            break # Critical error, stop trying encodings
         except Exception as e:
             print(f"An unexpected error occurred while processing CSV '{CSV_FILE_PATH}' with encoding {enc}: {e}")
             continue
 
     if not file_opened_successfully_locally and not CSV_LOADED_SUCCESSFULLY:
         print(f"CRITICAL ERROR during startup: Could not read or parse the CSV file '{CSV_FILE_PATH}' with any attempted encodings.")
-    elif not all_questions_data and file_opened_successfully_locally:
-        print(f"INFO during startup: CSV file '{CSV_FILE_PATH}' was loaded but found to be empty or malformed. API will return 404/503 for question requests.")
+    elif not all_questions_data and file_opened_successfully_locally: # CSV loaded but ultimately empty
+        print(f"INFO during startup: CSV file '{CSV_FILE_PATH}' was loaded but found to be empty or malformed after row validation. API will return 404/503 for question requests.")
+        # CSV_LOADED_SUCCESSFULLY might be true, but all_questions_data is empty. Health check will reflect this.
 
 except Exception as e:
     print(f"A critical error occurred during application startup logic: {e}")
@@ -59,9 +65,9 @@ except Exception as e:
 def health_check():
     if CSV_LOADED_SUCCESSFULLY and all_questions_data:
         return jsonify(status="ok", message="Application is healthy and data is loaded."), 200
-    elif CSV_LOADED_SUCCESSFULLY and not all_questions_data:
-        return jsonify(status="ok_empty_data", message="Application is running, but question data is empty."), 200
-    else:
+    elif CSV_LOADED_SUCCESSFULLY and not all_questions_data: # CSV was read but no valid data rows
+        return jsonify(status="ok_empty_data", message="Application is running, but question data is effectively empty."), 200
+    else: # CSV_LOADED_SUCCESSFULLY is False
         return jsonify(status="error", message="Application is running, but failed to load question data correctly."), 503
 
 
@@ -73,7 +79,7 @@ def get_single_question_for_unit(unit_id):
          abort(503, description="Service is unavailable as question data is empty (CSV loaded but no data).")
 
     unit_specific_questions_raw = [
-        q for q in all_questions_data if q.get('Unit No') == str(unit_id)
+        q for q in all_questions_data if q.get('Unit No') == str(unit_id) # Compare as strings
     ]
 
     if not unit_specific_questions_raw:
@@ -83,24 +89,21 @@ def get_single_question_for_unit(unit_id):
     question_text = selected_question_data.get('Question', 'Unknown Question')
     correct_answer = selected_question_data.get('Correct Answer', 'Unknown Correct Answer')
     
-    wrong_answers = [
-        selected_question_data.get('Wrong Answer 1', 'Fallback Option W1'), # Added fallbacks if CSV cells are empty
-        selected_question_data.get('Wrong Answer 2', 'Fallback Option W2'),
-        selected_question_data.get('Wrong Answer 3', 'Fallback Option W3'),
-        selected_question_data.get('Wrong Answer 4', 'Fallback Option W4')
+    wrong_answers_keys = ['Wrong Answer 1', 'Wrong Answer 2', 'Wrong Answer 3', 'Wrong Answer 4']
+    wrong_answers_raw = [selected_question_data.get(key) for key in wrong_answers_keys]
+    
+    wrong_answers_filtered = [
+        (ans.strip() if ans and ans.strip() else f"Option {i+1}") 
+        for i, ans in enumerate(wrong_answers_raw)
     ]
-    # Ensure all options are strings and not empty, otherwise provide a fallback to avoid UI issues.
-    # This is especially important if a CSV cell for a wrong answer is truly blank.
-    wrong_answers_filtered = [wa if wa and wa.strip() else f"Option {i+1}" for i, wa in enumerate(wrong_answers)]
-
 
     all_options = [correct_answer] + wrong_answers_filtered
     random.shuffle(all_options)
 
-    # Ensure we still have 5 options even if some were identical after filtering or fallbacks
-    # This scenario is less likely with distinct fallbacks, but good for robustness.
-    # For simplicity, the current approach relies on CSV having 1 correct + 4 distinct wrong answers.
-    # If CSV has empty cells for wrong answers, the fallbacks will be used.
+    # Ensure all options are distinct and we have 5. Fallbacks help, but real data should be good.
+    # If correct answer happens to be "Option X", it's an edge case.
+    # A more robust way to ensure 5 truly unique options if CSV data is messy would be more complex.
+    # For now, we assume CSV data provides enough distinct wrong answers.
 
     formatted_question = {
         "question": question_text,
@@ -114,6 +117,7 @@ if __name__ == '__main__':
     if not CSV_LOADED_SUCCESSFULLY:
         print("WARNING: Application starting with CSV data load issues. Health check will likely fail or indicate problems.")
     elif not all_questions_data:
-        print("WARNING: Application starting, CSV loaded but no data found. Endpoints for questions will return issues.")
-    # Run on 0.0.0.0 to make it accessible from other devices on your network (like Unity running on the same machine)
-    app.run(host='0.0.0.0', debug=True, port=5001)
+        print("WARNING: Application starting, CSV loaded but no data found (or all rows invalid). Endpoints for questions will return issues.")
+    else:
+        print("Application starting successfully with data loaded.")
+    app.run(host='0.0.0.0', port=5001) # Removed debug=True for a typical 'onrender' deployment scenario
